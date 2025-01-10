@@ -1,4 +1,5 @@
 import ccxt
+import pandas as pd
 import time
 import logging
 import json
@@ -170,6 +171,146 @@ def calculate_metrics(order, current_price):
 
 
 
+# Calculate technical indicators for initial buy on downtrend
+def fetch_ohlcv(exchange, symbol='BTC/USDT', timeframe='1h', limit=100):
+    """
+    Ανάκτηση ιστορικών δεδομένων OHLCV από το exchange.
+    :param exchange: ccxt exchange instance
+    :param symbol: Ζεύγος νομισμάτων (π.χ., 'BTC/USDT')
+    :param timeframe: Χρονικό διάστημα (π.χ., '1h', '1d')
+    :param limit: Αριθμός κεριών
+    :return: DataFrame με στήλες ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+    """
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+
+    logging.info(f"Fetched OHLCV data for symbol: {symbol}, timeframe: {timeframe}, limit: {limit}")
+
+    return df
+
+
+
+
+def ema(data, period):
+    """
+    Υπολογισμός Exponential Moving Average (EMA).
+    :param data: Series από τιμές (π.χ. τιμές κλεισίματος)
+    :param period: Περίοδος EMA
+    :return: Series με τις τιμές EMA
+    """
+    
+    logging.info(f"Calculated EMA for period: {period}, last value: {data.iloc[-1]:.4f}")
+
+    return data.ewm(span=period, adjust=False).mean()
+
+
+
+
+def rsi(data, period=14):
+    """
+    Υπολογισμός RSI.
+    :param data: Series από τιμές (π.χ. τιμές κλεισίματος)
+    :param period: Περίοδος RSI
+    :return: Series με τις τιμές RSI
+    """
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+
+    # Υπολογισμός RSI
+    result = 100 - (100 / (1 + rs))
+
+    # Logging μόνο του τελικού αποτελέσματος
+    if not result.empty:
+        logging.info(f"Calculated RSI for period: {period}, last value: {result.iloc[-1]:.4f}")
+    else:
+        logging.warning(f"RSI calculation returned an empty result for period: {period}")
+
+    return result
+
+
+
+
+
+def price_dropped_percent(current_price, recent_high):
+    """
+    Υπολογισμός πτώσης τιμής ως ποσοστό από το πρόσφατο υψηλό και έλεγχος αν ξεπερνά το όριο.
+    :param current_price: Τρέχουσα τιμή
+    :param recent_high: Πρόσφατο υψηλό
+    :return: Tuple (price_drop_percentage, meets_threshold)
+    """
+    if recent_high == 0:  # Αποφυγή διαίρεσης με το μηδέν
+        logging.warning("Recent high is zero. Cannot calculate price drop percentage.")
+        return 0, False
+
+    # Υπολογισμός πτώσης τιμής
+    price_drop = ((recent_high - current_price) / recent_high) * 100
+
+    # Έλεγχος αν πληροί το στατικό κατώφλι
+    meets_threshold = price_drop >= PERCENTAGE_DROP
+
+    # Logging
+    if meets_threshold:
+        logging.info(f"Price dropped {price_drop:.2f}% from recent high, meeting the threshold of {PERCENTAGE_DROP}%.")
+    else:
+        logging.info(f"Price dropped {price_drop:.2f}% from recent high, below the threshold of {PERCENTAGE_DROP}%.")
+
+    return price_drop, meets_threshold
+
+
+
+
+
+
+def find_support_levels(data, window=5):
+    """
+    Εντοπισμός επιπέδων υποστήριξης βασισμένος σε τοπικά ελάχιστα.
+    :param data: Series με τιμές (π.χ. low)
+    :param window: Μέγεθος παραθύρου για τοπικά ελάχιστα
+    :return: Λίστα με επίπεδα υποστήριξης
+    """
+    support_levels = data[(data.shift(1) > data) & (data.shift(-1) > data)].rolling(window).min().dropna().tolist()
+    
+    
+    return sorted(set(support_levels))
+
+
+
+
+def near_support_level(current_price, support_levels, tolerance=50):
+    """
+    Ελέγχει αν η τρέχουσα τιμή είναι κοντά σε επίπεδο υποστήριξης.
+    :param current_price: Τρέχουσα τιμή
+    :param support_levels: Λίστα από επίπεδα υποστήριξης
+    :param tolerance: Ανοχή (σε απόλυτη τιμή)
+    :return: True αν η τιμή είναι κοντά σε κάποιο επίπεδο υποστήριξης
+    """
+    for support in support_levels:
+        if abs(current_price - support) <= tolerance:
+            logging.info(
+                f"Current price {current_price:.2f} is near support level {support:.2f} within tolerance {tolerance}."
+            )
+            return True
+    logging.info(f"Current price {current_price:.2f} is not near any support level within tolerance {tolerance}.")
+    return False
+
+
+
+
+def wait_for_next_signal(interval=120):
+    """
+    Περιμένει για το επόμενο σήμα.
+    :param interval: Διάστημα χρόνου σε δευτερόλεπτα (default: 120)
+    """
+    logging.info(f"Waiting for {interval} seconds for the next signal...")
+    time.sleep(interval)
+
+
+
+
+
 
 # Main trading function
 def run_dca_bot():    
@@ -200,6 +341,12 @@ def run_dca_bot():
             logging.info(f"Current price: {current_price} {CRYPTO_CURRENCY}")
             
 
+            # Logging the strategy parameters
+            logging.info(
+                f"Strategy parameters: PERCENTAGE_DROP = {PERCENTAGE_DROP}%, PERCENTAGE_RISE = {PERCENTAGE_RISE}%."
+            )
+
+
             # Υπολογισμός επόμενης τιμής αγοράς
             if orders:
                 lowest_order_price = min(map(float, orders.keys()))
@@ -227,60 +374,85 @@ def run_dca_bot():
                 if total_amount > 0:
                     average_price = total_cost / total_amount
                     logging.info(f"Total quantity: {total_amount:.2f} {CRYPTO_SYMBOL}, Average Buy: {average_price:.4f} {CRYPTO_CURRENCY}")
-                    print()
+
                       
             
             else:
                 logging.info("No existing orders.")
                 
             
-            # Initial buying logic if thera are no orders
+
+            # Initial buying logic if there are no orders
             if not orders:
-                
-                # Buy Crypto
                 try:
-                    order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
-                                       
-                    
+                    # Fetch historical data and calculate indicators
+                    df = fetch_ohlcv(exchange, symbol=PAIR, timeframe='1h', limit=100)
+                    df['ema_fast'] = ema(df['close'], period=9)
+                    df['ema_slow'] = ema(df['close'], period=21)
+                    df['rsi'] = rsi(df['close'], period=14)
+                    support_levels = find_support_levels(df['low'], window=5)
+
+                    # Current price and conditions
+                    current_price = df['close'].iloc[-1]
+                    recent_high = df['close'].rolling(window=20).max().iloc[-1]
+
+                    # Check price drop and threshold
+                    price_drop, meets_threshold = price_dropped_percent(current_price, recent_high)
+
+                    # Logging key metrics
                     logging.info(
-                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.2f} {CRYPTO_CURRENCY}. "
-                        f"Reason: No existing orders. Buying at the current price."
+                        f"Current price: {current_price:.4f}, Recent high: {recent_high:.4f}, "
+                        f"Price drop: {price_drop:.4f}%, Threshold: {PERCENTAGE_DROP:.2f}%."
                     )
-
-                    # Ενημέρωση χρήστη για αγορά με Push msg
-                    send_push_notification(
-                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.2f} {CRYPTO_CURRENCY}. "
-                        f"Reason: No existing orders. Buying at the current price."
-                    )
-
-                    logging.info(
-                        f"Total Orders: {len(orders) + 1}. Current Portfolio Strategy: Adding to position to reduce cost average."
-                    )
+                    logging.info(f"Identified support levels: {support_levels}")
 
                     
-                    print()
-                                        
                     
-                    # Record the order
-                    order_data = {
-                        "id": order['id'],
-                        "symbol": PAIR,
-                        "price": current_price,
-                        "side": "buy",
-                        "status": "open",
-                        "amount": TRADE_AMOUNT,
-                        "remaining": TRADE_AMOUNT,
-                        "datetime": order['datetime'],
-                        "timestamp": order['timestamp']
-                    }
-                    orders[str(current_price)] = order_data
-                    save_orders(orders)
+                    # Check conditions for initial buy
+                    if meets_threshold and near_support_level(current_price, support_levels, tolerance=50):
+                        
+                        
+                        # Execute market buy
+                        order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
+
+                        logging.info(
+                            f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                            f"Reason: Suitable conditions met (price drop and near support)."
+                        )
+
+                        send_push_notification(
+                            f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                            f"Reason: Suitable conditions met (price drop and near support)."
+                        )
+
+                        # Record the order
+                        order_data = {
+                            "id": order['id'],
+                            "symbol": PAIR,
+                            "price": current_price,
+                            "side": "buy",
+                            "status": "open",
+                            "amount": TRADE_AMOUNT,
+                            "remaining": TRADE_AMOUNT,
+                            "datetime": order['datetime'],
+                            "timestamp": order['timestamp']
+                        }
+                        orders[str(current_price)] = order_data
+                        save_orders(orders)
                     
                     
+                    
+                    else:
+                        logging.info(
+                            "No suitable conditions for initial buy. Waiting for next signal."
+                        )
+
                 except ccxt.BaseError as api_error:
                     logging.error(f"Error placing buy order: {api_error}")
                     startBot = False
                     return
+
+
                     
                     
                     
@@ -294,16 +466,16 @@ def run_dca_bot():
                     
                     lowest_order_price = min(map(float, orders.keys()))
                     logging.info(
-                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.2f} {CRYPTO_CURRENCY}. "
-                        f"Reason: Current price {current_price:.2f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
-                        f"from the lowest order price {lowest_order_price:.2f}."
+                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                        f"Reason: Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
+                        f"from the lowest order price {lowest_order_price:.4f}."
                     )
 
                     # Ενημέρωση χρήστη για αγορά με Push msg
                     send_push_notification(
-                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.2f} {CRYPTO_CURRENCY}. "
-                        f"Reason: Current price {current_price:.2f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
-                        f"from the lowest order price {lowest_order_price:.2f}."
+                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                        f"Reason: Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
+                        f"from the lowest order price {lowest_order_price:.4f}."
                     )
 
                     logging.info(
@@ -339,31 +511,32 @@ def run_dca_bot():
                     
             
             # Sell evaluation
-            print()
-            logging.info(f"{'=' * 20} Sell Threshold Evaluation in {CRYPTO_CURRENCY} {'=' * 20}")
-            for price, order in list(orders.items()):  # Copy to avoid modifying during iteration
-                sell_threshold = float(price) * (1 + PERCENTAGE_RISE / 100)
-                
-                #logging.info(f"Calculated sell threshold: {sell_threshold:.4f} {CRYPTO_CURRENCY} for order price: {price} {CRYPTO_CURRENCY}")
-                
-
-                if current_price >= sell_threshold:
-                    # Sell BTC
-                    sell_order = exchange.create_market_sell_order(PAIR, order['amount'])
-                    logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Selling!")
+            if orders:
+                print()
+                logging.info(f"{'=' * 20} Sell Threshold Evaluation in {CRYPTO_CURRENCY} {'=' * 20}")
+                for price, order in list(orders.items()):  # Copy to avoid modifying during iteration
+                    sell_threshold = float(price) * (1 + PERCENTAGE_RISE / 100)
                     
-                    # Στέλνουμε push notification
-                    rounded_price = round(current_price, 4)  # Στρογγυλοποίηση για να ταιριάζει με τη μορφή στο push
-                    send_push_notification(f"Order Filled at {rounded_price:.4f} | Order ID: {order['id']} | Sold at: {current_price:.4f}")
-                                       
-
-                    # Remove the order from the list
-                    del orders[price]
-                    save_orders(orders)
+                    #logging.info(f"Calculated sell threshold: {sell_threshold:.4f} {CRYPTO_CURRENCY} for order price: {price} {CRYPTO_CURRENCY}")
                     
-                else:
-                    #logging.info(f"Current price {current_price:.4f} {CRYPTO_CURRENCY} did not reach the sell threshold {sell_threshold:.4f} {CRYPTO_CURRENCY}.")
-                    logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Not selling.")
+
+                    if current_price >= sell_threshold:
+                        # Sell BTC
+                        sell_order = exchange.create_market_sell_order(PAIR, order['amount'])
+                        logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Selling!")
+                        
+                        # Στέλνουμε push notification
+                        rounded_price = round(current_price, 4)  # Στρογγυλοποίηση για να ταιριάζει με τη μορφή στο push
+                        send_push_notification(f"Order Filled at {rounded_price:.4f} | Order ID: {order['id']} | Sold at: {current_price:.4f}")
+                                           
+
+                        # Remove the order from the list
+                        del orders[price]
+                        save_orders(orders)
+                        
+                    else:
+                        #logging.info(f"Current price {current_price:.4f} {CRYPTO_CURRENCY} did not reach the sell threshold {sell_threshold:.4f} {CRYPTO_CURRENCY}.")
+                        logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Not selling.")
                     
                       
             
@@ -377,7 +550,7 @@ def run_dca_bot():
 
             time.sleep(60)
     except KeyboardInterrupt:
-        logging.info("Bot stopped by user.")
+        logging.info("Bot operation was interrupted by user.")
     except Exception as e:
         logging.error(f"An error occurred: {e}")
         send_push_notification(f"ALERT: Bot is stopped. An error occurred: {e}")
