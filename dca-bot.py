@@ -331,7 +331,7 @@ def run_dca_bot():
             
 
             print()
-            #logging.info(f"{'=' * 40}")
+            logging.info(f"{'=' * 40}")
             logging.info(f"Starting a new loop iteration for {PAIR}")
             
 
