@@ -23,7 +23,7 @@ CRYPTO_CURRENCY = 'USDT'
 EXCHANGE_NAME = 'binance'
 PERCENTAGE_DROP = 2
 PERCENTAGE_RISE = 2
-TRADE_AMOUNT = 5
+TRADE_AMOUNT = 50
 ORDERS_FILE = "/opt/python/dca-bot-bitcoin/orders.json"
 CONFIG_FILE = "/opt/python/dca-bot-bitcoin/config.json"
 startBot = True
@@ -467,7 +467,7 @@ def run_dca_bot():
                     lowest_order_price = min(map(float, orders.keys()))
                     logging.info(
                         f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
-                        f"Reason: Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
+                        f"Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
                         f"from the lowest order price {lowest_order_price:.4f}."
                     )
 
@@ -527,7 +527,7 @@ def run_dca_bot():
                         
                         # Στέλνουμε push notification
                         rounded_price = round(current_price, 4)  # Στρογγυλοποίηση για να ταιριάζει με τη μορφή στο push
-                        send_push_notification(f"Order Filled at {rounded_price:.4f} | Order ID: {order['id']} | Sold at: {current_price:.4f}")
+                        send_push_notification(f"Sale order of {order['amount']} {PAIR} was executed at {rounded_price:.4f} with order no: {order['id']}")
                                            
 
                         # Remove the order from the list
