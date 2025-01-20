@@ -330,8 +330,7 @@ def run_dca_bot():
             iteration_start = time.time()
             
 
-            print()
-            logging.info(f"{'=' * 40}")
+            print()            
             logging.info(f"Starting a new loop iteration for {PAIR}")
             
 
@@ -545,10 +544,10 @@ def run_dca_bot():
             iteration_end = time.time()
             logging.info(f"Loop iteration completed in {iteration_end - iteration_start:.2f} seconds.")
 
-
-
-
             time.sleep(60)
+
+
+
     except KeyboardInterrupt:
         logging.info("Bot operation was interrupted by user.")
     except Exception as e:
