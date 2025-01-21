@@ -5,10 +5,44 @@ import ccxt
 
 app = Flask(__name__)
 
-# Initialize exchange and load orders
+
+
+# Config files
 ORDERS_FILE = "/opt/python/dca-bot-bitcoin/orders.json"
-PAIR = 'XRP/USDT'
-EXCHANGE_NAME = 'binance'
+CONFIG_FILE = "/opt/python/dca-bot-bitcoin/config.json"
+
+
+def load_pair_and_exchange():
+    """Load PAIR and EXCHANGE_NAME from the JSON configuration file."""
+    try:
+        with open(CONFIG_FILE, "r") as file:
+            keys = json.load(file)
+            
+            # Ανάγνωση της ενότητας TRADE_CONFIG
+            trade_config = keys.get("TRADE_CONFIG", {})
+            pair = trade_config.get("PAIR")
+            exchange_name = trade_config.get("EXCHANGE_NAME")
+            
+            # Έλεγχος για κενές τιμές
+            if not pair or not exchange_name:
+                missing_keys = []
+                if not pair:
+                    missing_keys.append("PAIR")
+                if not exchange_name:
+                    missing_keys.append("EXCHANGE_NAME")
+                raise ValueError(f"Missing keys in the JSON file: {', '.join(missing_keys)}")
+
+            return pair, exchange_name
+    except FileNotFoundError:
+        raise FileNotFoundError(f"The specified JSON file '{CONFIG_FILE}' was not found.")
+    except json.JSONDecodeError:
+        raise ValueError(f"The JSON file '{CONFIG_FILE}' is not properly formatted.")
+
+
+# Φόρτωση PAIR και EXCHANGE_NAME
+PAIR, EXCHANGE_NAME = load_pair_and_exchange()
+
+
 
 def initialize_exchange():
     with open("/opt/python/dca-bot-bitcoin/config.json", "r") as f:
