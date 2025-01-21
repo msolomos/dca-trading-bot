@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timedelta
 import pushover
 
+
 # Configure logging to both file and console
 logging.basicConfig(
     level=logging.INFO,
@@ -16,27 +17,21 @@ logging.basicConfig(
     ],
 )
 
-# Configuration
-PAIR = 'XRP/USDT'
-CRYPTO_SYMBOL = 'XRP'
-CRYPTO_CURRENCY = 'USDT'
-EXCHANGE_NAME = 'binance'
-PERCENTAGE_DROP = 2
-PERCENTAGE_RISE = 2
-TRADE_AMOUNT = 50
+# Διαδρομές αρχείων 
 ORDERS_FILE = "/opt/python/dca-bot-bitcoin/orders.json"
 CONFIG_FILE = "/opt/python/dca-bot-bitcoin/config.json"
-startBot = True
 
 # Παράμετροι Αποστολής E-mail
 ENABLE_EMAIL_NOTIFICATIONS = True
 ENABLE_PUSH_NOTIFICATIONS = True
 
+# Άλλες μεταβλητές αρχικοποίησης
+startBot = True
 
 
 # Load Keys from external file
 def load_keys():
-    """Load API credentials and notification settings from a JSON file."""
+    """Load API credentials, notification settings, and trade configuration from a JSON file."""
     try:
         with open(CONFIG_FILE, "r") as file:
             keys = json.load(file)
@@ -52,6 +47,16 @@ def load_keys():
             email_sender = keys.get("EMAIL_SENDER")
             email_recipient = keys.get("EMAIL_RECIPIENT")
 
+            # Ρυθμίσεις για το Trade Configuration
+            trade_config = keys.get("TRADE_CONFIG", {})
+            pair = trade_config.get("PAIR")
+            crypto_symbol = trade_config.get("CRYPTO_SYMBOL")
+            crypto_currency = trade_config.get("CRYPTO_CURRENCY")
+            exchange_name = trade_config.get("EXCHANGE_NAME")
+            percentage_drop = trade_config.get("PERCENTAGE_DROP")
+            percentage_rise = trade_config.get("PERCENTAGE_RISE")
+            trade_amount = trade_config.get("TRADE_AMOUNT")
+            
             # Έλεγχος για κενές τιμές
             missing_keys = []
             if not api_key or not api_secret:
@@ -66,11 +71,16 @@ def load_keys():
                 missing_keys.append("EMAIL_SENDER")
             if not email_recipient:
                 missing_keys.append("EMAIL_RECIPIENT")
+            if not pair or not crypto_symbol or not crypto_currency or not exchange_name:
+                missing_keys.extend(["PAIR", "CRYPTO_SYMBOL", "CRYPTO_CURRENCY", "EXCHANGE_NAME"])
+            if percentage_drop is None or percentage_rise is None or trade_amount is None:
+                missing_keys.extend(["PERCENTAGE_DROP", "PERCENTAGE_RISE", "TRADE_AMOUNT"])
             
             if missing_keys:
                 raise ValueError(f"Missing keys in the JSON file: {', '.join(missing_keys)}")
 
-            return api_key, api_secret, sendgrid_api_key, pushover_token, pushover_user, email_sender, email_recipient
+            return (api_key, api_secret, sendgrid_api_key, pushover_token, pushover_user, email_sender, email_recipient,
+                    pair, crypto_symbol, crypto_currency, exchange_name, percentage_drop, percentage_rise, trade_amount)
     except FileNotFoundError:
         raise FileNotFoundError(f"The specified JSON file '{CONFIG_FILE}' was not found.")
     except json.JSONDecodeError:
@@ -78,9 +88,10 @@ def load_keys():
 
 
 
+# Load configuration from the JSON file
+(API_KEY, API_SECRET, SENDGRID_API_KEY, PUSHOVER_TOKEN, PUSHOVER_USER, EMAIL_SENDER, EMAIL_RECIPIENT,
+ PAIR, CRYPTO_SYMBOL, CRYPTO_CURRENCY, EXCHANGE_NAME, PERCENTAGE_DROP, PERCENTAGE_RISE, TRADE_AMOUNT) = load_keys()
 
-# Load API_KEY and API_SECRET from the JSON file
-API_KEY, API_SECRET, SENDGRID_API_KEY, PUSHOVER_TOKEN, PUSHOVER_USER, EMAIL_SENDER, EMAIL_RECIPIENT = load_keys()
 
 
 
@@ -114,14 +125,24 @@ def initialize_exchange():
     try:
         # Φόρτωση των απαραίτητων API κλειδιών
         keys = load_keys()
-        api_key, api_secret = keys[0], keys[1]  # Μόνο τα API_KEY και API_SECRET χρειάζονται για το exchange
+        api_key, api_secret = keys[0], keys[1]
 
-        # Αρχικοποίηση του exchange
-        exchange = getattr(ccxt, EXCHANGE_NAME)({
+        # Δημιουργία βάσει του EXCHANGE_NAME
+        exchange_class = getattr(ccxt, EXCHANGE_NAME)
+        exchange_params = {
             "apiKey": api_key,
             "secret": api_secret,
             "enableRateLimit": True,
-        })
+        }
+
+        # Ειδικές ρυθμίσεις για συγκεκριμένα ανταλλακτήρια
+        if EXCHANGE_NAME == "coinbase":
+            exchange_params["options"] = {
+                "createMarketBuyOrderRequiresPrice": False
+            }
+
+        # Αρχικοποίηση του exchange
+        exchange = exchange_class(exchange_params)
         exchange.set_sandbox_mode(False)  # Απενεργοποίηση sandbox mode
         exchange.load_markets()  # Φόρτωση αγορών
 
@@ -130,6 +151,7 @@ def initialize_exchange():
     except Exception as e:
         logging.error(f"Failed to connect to {EXCHANGE_NAME}: {e}")
         raise
+
 
 
 
@@ -161,8 +183,19 @@ def save_orders(orders):
 # Calculate metrics
 def calculate_metrics(order, current_price):
     sell_threshold = float(order['price']) * (1 + PERCENTAGE_RISE / 100)
-    days_open = (datetime.now() - datetime.strptime(order['datetime'], "%Y-%m-%dT%H:%M:%S.%fZ")).days
+    
+    # Default τιμή για days_open αν δεν υπάρχει ημερομηνία
+    if order.get('datetime') is not None:
+        try:
+            order_datetime = datetime.strptime(order['datetime'], "%Y-%m-%dT%H:%M:%S.%fZ")
+            days_open = (datetime.now() - order_datetime).days
+        except ValueError:
+            days_open = 0  # Εναλλακτικά: πέταξε εξαίρεση ή log το σφάλμα
+    else:
+        days_open = 0
+
     distance_to_sell = sell_threshold - current_price
+
     return {
         "sell_threshold": sell_threshold,
         "days_open": days_open,
@@ -313,8 +346,14 @@ def wait_for_next_signal(interval=120):
 
 
 # Main trading function
-def run_dca_bot():    
-    logging.info(f"{'=' * 20} Starting DCA Trading bot {'=' * 20}")
+def run_dca_bot():       
+    # Υλοποίηση της κύριας λογικής του bot
+   
+    logging.info(f">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+    logging.info(f"Starting {PAIR} DCA Trading bot...")
+    logging.info(f"Loaded configuration file from {CONFIG_FILE}.")
+    
+    iteration_start = time.time()    
     
     # Initialize Exchange and load orders
     exchange = initialize_exchange()
@@ -326,165 +365,97 @@ def run_dca_bot():
     logging.debug(f"Starting price: {last_price}")    
 
     try:
-        while True:
-            iteration_start = time.time()
-            
 
-            print()            
-            logging.info(f"Starting a new loop iteration for {PAIR}")
-            
+        logging.info(f"Starting a new loop iteration for {PAIR}")
+        
+        # Fetch the current price
+        current_price = float(exchange.fetch_ticker(PAIR)['last'])
+        logging.info(f"Current price: {current_price} {CRYPTO_CURRENCY}")
+        
 
-            
-            # Fetch the current price
-            current_price = float(exchange.fetch_ticker(PAIR)['last'])
-            logging.info(f"Current price: {current_price} {CRYPTO_CURRENCY}")
-            
-
-            # Logging the strategy parameters
-            logging.info(
-                f"Strategy parameters: PERCENTAGE_DROP = {PERCENTAGE_DROP}%, PERCENTAGE_RISE = {PERCENTAGE_RISE}%."
-            )
+        # Logging the strategy parameters
+        logging.info(
+            f"Strategy parameters: PERCENTAGE_DROP = {PERCENTAGE_DROP}%, PERCENTAGE_RISE = {PERCENTAGE_RISE}%."
+        )
 
 
-            # Υπολογισμός επόμενης τιμής αγοράς
-            if orders:
-                lowest_order_price = min(map(float, orders.keys()))
-                next_buy_price = lowest_order_price * (1 - PERCENTAGE_DROP / 100)
-                logging.info(f"Next buy will occur if the price drops to: {next_buy_price:.4f} {CRYPTO_CURRENCY} or lower.")            
-            
-            
+        # Υπολογισμός επόμενης τιμής αγοράς
+        if orders:
+            lowest_order_price = min(map(float, orders.keys()))
+            next_buy_price = lowest_order_price * (1 - PERCENTAGE_DROP / 100)
+            logging.info(f"Next buy will occur if the price drops to: {next_buy_price:.4f} {CRYPTO_CURRENCY} or lower.")            
+        
+        
 
-            # Log details of existing orders            
-            if orders:
-                print()
-                logging.info(f"{'=' * 20} Existing Orders in {CRYPTO_CURRENCY} {'=' * 20}")
-                logging.info(f"{'Order ID':<15} {'Amount':<10} {'Bought At':<10} {'Sell At':<10} {'Days Open':<10} {'Distance to Sell':<10}")
-                total_amount = 0
-                total_cost = 0
+        # Log details of existing orders            
+        if orders:
+            print()
+            logging.info(f"{'=' * 20} Existing Orders in {CRYPTO_CURRENCY} {'=' * 20}")
+            logging.info(f"{'Order ID':<15} {'Amount':<10} {'Bought At':<10} {'Sell At':<10} {'Days Open':<10} {'Distance to Sell':<10}")
+            total_amount = 0
+            total_cost = 0
+            
+            for price, order in orders.items():
+                metrics = calculate_metrics(order, current_price)
+                logging.info(f"{order['id']:<15} {order['amount']:<10.2f} {order['price']:<10.4f} {metrics['sell_threshold']:<10.4f} {metrics['days_open']:<10} {metrics['distance_to_sell']:<10.4f}")
+                total_amount += order['amount']
+                total_cost += order['amount'] * order['price']
                 
-                for price, order in orders.items():
-                    metrics = calculate_metrics(order, current_price)
-                    logging.info(f"{order['id']:<15} {order['amount']:<10.2f} {order['price']:<10.4f} {metrics['sell_threshold']:<10.4f} {metrics['days_open']:<10} {metrics['distance_to_sell']:<10.4f}")
-                    total_amount += order['amount']
-                    total_cost += order['amount'] * order['price']
-                    
 
-                # Υπολογισμός μέσου όρου αγοράς
-                if total_amount > 0:
-                    average_price = total_cost / total_amount
-                    logging.info(f"Total quantity: {total_amount:.2f} {CRYPTO_SYMBOL}, Average Buy: {average_price:.4f} {CRYPTO_CURRENCY}")
-
-                      
+            # Υπολογισμός μέσου όρου αγοράς
+            if total_amount > 0:
+                average_price = total_cost / total_amount
+                logging.info(f"Total quantity: {total_amount:.2f} {CRYPTO_SYMBOL}, Average Buy: {average_price:.4f} {CRYPTO_CURRENCY}")
+                  
+        
+        else:
+            logging.info("No existing orders.")
             
-            else:
-                logging.info("No existing orders.")
+        
+
+        # Initial buying logic if there are no orders
+        if not orders:
+            try:
+                # Fetch historical data and calculate indicators
+                df = fetch_ohlcv(exchange, symbol=PAIR, timeframe='1h', limit=100)
+                df['ema_fast'] = ema(df['close'], period=9)
+                df['ema_slow'] = ema(df['close'], period=21)
+                df['rsi'] = rsi(df['close'], period=14)
+                support_levels = find_support_levels(df['low'], window=5)
+
+                # Current price and conditions
+                current_price = df['close'].iloc[-1]
+                recent_high = df['close'].rolling(window=20).max().iloc[-1]
+
+                # Check price drop and threshold
+                price_drop, meets_threshold = price_dropped_percent(current_price, recent_high)
+
+                # Logging key metrics
+                logging.info(
+                    f"Current price: {current_price:.4f}, Recent high: {recent_high:.4f}, "
+                    f"Price drop: {price_drop:.4f}%, Threshold: {PERCENTAGE_DROP:.2f}%."
+                )
+                logging.info(f"Identified support levels: {support_levels}")
+
                 
-            
-
-            # Initial buying logic if there are no orders
-            if not orders:
-                try:
-                    # Fetch historical data and calculate indicators
-                    df = fetch_ohlcv(exchange, symbol=PAIR, timeframe='1h', limit=100)
-                    df['ema_fast'] = ema(df['close'], period=9)
-                    df['ema_slow'] = ema(df['close'], period=21)
-                    df['rsi'] = rsi(df['close'], period=14)
-                    support_levels = find_support_levels(df['low'], window=5)
-
-                    # Current price and conditions
-                    current_price = df['close'].iloc[-1]
-                    recent_high = df['close'].rolling(window=20).max().iloc[-1]
-
-                    # Check price drop and threshold
-                    price_drop, meets_threshold = price_dropped_percent(current_price, recent_high)
-
-                    # Logging key metrics
-                    logging.info(
-                        f"Current price: {current_price:.4f}, Recent high: {recent_high:.4f}, "
-                        f"Price drop: {price_drop:.4f}%, Threshold: {PERCENTAGE_DROP:.2f}%."
-                    )
-                    logging.info(f"Identified support levels: {support_levels}")
-
-                    
-                    
-                    # Check conditions for initial buy
-                    if meets_threshold and near_support_level(current_price, support_levels, tolerance=50):
-                        
-                        
-                        # Execute market buy
-                        order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
-
-                        logging.info(
-                            f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
-                            f"Reason: Suitable conditions met (price drop and near support)."
-                        )
-
-                        send_push_notification(
-                            f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
-                            f"Reason: Suitable conditions met (price drop and near support)."
-                        )
-
-                        # Record the order
-                        order_data = {
-                            "id": order['id'],
-                            "symbol": PAIR,
-                            "price": current_price,
-                            "side": "buy",
-                            "status": "open",
-                            "amount": TRADE_AMOUNT,
-                            "remaining": TRADE_AMOUNT,
-                            "datetime": order['datetime'],
-                            "timestamp": order['timestamp']
-                        }
-                        orders[str(current_price)] = order_data
-                        save_orders(orders)
-                    
-                    
-                    
-                    else:
-                        logging.info(
-                            "No suitable conditions for initial buy. Waiting for next signal."
-                        )
-
-                except ccxt.BaseError as api_error:
-                    logging.error(f"Error placing buy order: {api_error}")
-                    startBot = False
-                    return
-
-
-                    
-                    
-                    
-            # Buy more if price drops below percentage_drop
-            if orders and current_price <= min(map(float, orders.keys())) * (1 - PERCENTAGE_DROP / 100):
                 
-                # Buy Crypto
-                try:
+                # Check conditions for initial buy
+                if meets_threshold and near_support_level(current_price, support_levels, tolerance=50):
+                    
+                    
+                    # Execute market buy
                     order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
-                                       
-                    
-                    lowest_order_price = min(map(float, orders.keys()))
+
                     logging.info(
                         f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
-                        f"Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
-                        f"from the lowest order price {lowest_order_price:.4f}."
+                        f"Reason: Suitable conditions met (price drop and near support)."
                     )
 
-                    # Ενημέρωση χρήστη για αγορά με Push msg
                     send_push_notification(
                         f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
-                        f"Reason: Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
-                        f"from the lowest order price {lowest_order_price:.4f}."
+                        f"Reason: Suitable conditions met (price drop and near support)."
                     )
 
-                    logging.info(
-                        f"Total Orders: {len(orders) + 1}. Current Portfolio Strategy: Adding to position to reduce cost average."
-                    )
-
-                    
-                    print()
-                                        
-                    
                     # Record the order
                     order_data = {
                         "id": order['id'],
@@ -499,52 +470,114 @@ def run_dca_bot():
                     }
                     orders[str(current_price)] = order_data
                     save_orders(orders)
-                    
-                    
-                except ccxt.BaseError as api_error:
-                    logging.error(f"Error placing buy order: {api_error}")
-                    startBot = False
-                    return                    
-                    
-                    
-                    
+                
+                
+                
+                else:
+                    logging.info(
+                        "No suitable conditions for initial buy. Waiting for next signal."
+                    )
+
+            except ccxt.BaseError as api_error:
+                logging.error(f"Error placing buy order: {api_error}")
+                startBot = False
+                return
+
+
+                
+                
+                
+        # Buy more if price drops below percentage_drop
+        if orders and current_price <= min(map(float, orders.keys())) * (1 - PERCENTAGE_DROP / 100):
             
-            # Sell evaluation
-            if orders:
+            # Buy Crypto
+            try:
+                order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
+                                   
+                
+                lowest_order_price = min(map(float, orders.keys()))
+                logging.info(
+                    f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                    f"Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
+                    f"from the lowest order price {lowest_order_price:.4f}."
+                )
+
+                # Ενημέρωση χρήστη για αγορά με Push msg
+                send_push_notification(
+                    f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                    f"Reason: Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
+                    f"from the lowest order price {lowest_order_price:.4f}."
+                )
+
+                logging.info(
+                    f"Total Orders: {len(orders) + 1}. Current Portfolio Strategy: Adding to position to reduce cost average."
+                )
+
+                
                 print()
-                logging.info(f"{'=' * 20} Sell Threshold Evaluation in {CRYPTO_CURRENCY} {'=' * 20}")
-                for price, order in list(orders.items()):  # Copy to avoid modifying during iteration
-                    sell_threshold = float(price) * (1 + PERCENTAGE_RISE / 100)
-                    
-                    #logging.info(f"Calculated sell threshold: {sell_threshold:.4f} {CRYPTO_CURRENCY} for order price: {price} {CRYPTO_CURRENCY}")
-                    
+                                    
+                
+                # Record the order
+                order_data = {
+                    "id": order['id'],
+                    "symbol": PAIR,
+                    "price": current_price,
+                    "side": "buy",
+                    "status": "open",
+                    "amount": TRADE_AMOUNT,
+                    "remaining": TRADE_AMOUNT,
+                    "datetime": order['datetime'],
+                    "timestamp": order['timestamp']
+                }
+                orders[str(current_price)] = order_data
+                save_orders(orders)
+                
+                
+            except ccxt.BaseError as api_error:
+                logging.error(f"Error placing buy order: {api_error}")
+                startBot = False
+                return                    
+                
+                
+                
+        
+        # Sell evaluation
+        if orders:
+            print()
+            logging.info(f"{'=' * 20} Sell Threshold Evaluation in {CRYPTO_CURRENCY} {'=' * 20}")
+            for price, order in list(orders.items()):  # Copy to avoid modifying during iteration
+                sell_threshold = float(price) * (1 + PERCENTAGE_RISE / 100)
+                
+                #logging.info(f"Calculated sell threshold: {sell_threshold:.4f} {CRYPTO_CURRENCY} for order price: {price} {CRYPTO_CURRENCY}")
+                
 
-                    if current_price >= sell_threshold:
-                        # Sell BTC
-                        sell_order = exchange.create_market_sell_order(PAIR, order['amount'])
-                        logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Selling!")
-                        
-                        # Στέλνουμε push notification
-                        rounded_price = round(current_price, 4)  # Στρογγυλοποίηση για να ταιριάζει με τη μορφή στο push
-                        send_push_notification(f"Sale order of {order['amount']} {PAIR} was executed at {rounded_price:.4f} with order no: {order['id']}")
-                                           
-
-                        # Remove the order from the list
-                        del orders[price]
-                        save_orders(orders)
-                        
-                    else:
-                        #logging.info(f"Current price {current_price:.4f} {CRYPTO_CURRENCY} did not reach the sell threshold {sell_threshold:.4f} {CRYPTO_CURRENCY}.")
-                        logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Not selling.")
+                if current_price >= sell_threshold:
+                    # Sell BTC
+                    sell_order = exchange.create_market_sell_order(PAIR, order['amount'])
+                    logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Selling!")
                     
-                      
-            
-            
-            # Μετά την ολοκλήρωση του iteration
-            iteration_end = time.time()
-            logging.info(f"Loop iteration completed in {iteration_end - iteration_start:.2f} seconds.")
+                    # Στέλνουμε push notification
+                    rounded_price = round(current_price, 4)  # Στρογγυλοποίηση για να ταιριάζει με τη μορφή στο push
+                    send_push_notification(f"Sale order of {order['amount']} {PAIR} was executed at {rounded_price:.4f} with order no: {order['id']}")
+                                       
 
-            time.sleep(60)
+                    # Remove the order from the list
+                    del orders[price]
+                    save_orders(orders)
+                    
+                else:
+                    #logging.info(f"Current price {current_price:.4f} {CRYPTO_CURRENCY} did not reach the sell threshold {sell_threshold:.4f} {CRYPTO_CURRENCY}.")
+                    logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Not selling.")
+                
+                  
+        
+        
+        # Μετά την ολοκλήρωση του iteration
+        iteration_end = time.time()
+        logging.info(f"Loop iteration completed in {iteration_end - iteration_start:.2f} seconds.")
+
+
+
 
 
 
