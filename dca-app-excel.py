@@ -62,15 +62,23 @@ def load_orders():
     except FileNotFoundError:
         return {}
 
+
 def calculate_metrics(order, current_price):
+    if 'price' not in order:
+        raise KeyError("'price' key is missing from the order.")
+    
     sell_threshold = float(order['price']) * (1 + 2 / 100)  # PERCENTAGE_RISE = 2%
-    days_open = (datetime.now() - datetime.strptime(order['datetime'], "%Y-%m-%dT%H:%M:%S.%fZ")).days
+    days_open = (datetime.utcnow() - datetime.strptime(order['datetime'], "%Y-%m-%dT%H:%M:%S.%fZ")).days
     distance_to_sell = sell_threshold - current_price
+
     return {
         "sell_threshold": sell_threshold,
         "days_open": days_open,
         "distance_to_sell": distance_to_sell,
     }
+
+
+
 
 # Favicon Endpoint
 @app.route('/favicon.ico')
@@ -82,13 +90,33 @@ def current_price():
     current_price = float(exchange.fetch_ticker(PAIR)['last'])
     return jsonify({"pair": PAIR, "current_price": current_price})
 
+
+
 @app.route('/DCA/existing_orders', methods=['GET'])
 def existing_orders():
-    orders = load_orders()
+    # Φόρτωση μόνο των ORDERS από το αρχείο
+    orders_data = load_orders()
+    orders = orders_data.get("ORDERS", {})  # Παίρνουμε μόνο το αντικείμενο ORDERS
+
     current_price = float(exchange.fetch_ticker(PAIR)['last'])
     order_details = []
+
     for price, order in orders.items():
+        # Έλεγχος για το κλειδί 'price' και 'datetime'
+        if 'price' not in order or 'datetime' not in order:
+            logging.error(f"Order missing required keys: {order}")
+            continue  # Αγνόηση παραγγελίας χωρίς τα απαραίτητα κλειδιά
+
         metrics = calculate_metrics(order, current_price)
+
+        # Μετατροπή της ημερομηνίας
+        try:
+            iso_datetime = datetime.strptime(order['datetime'], "%Y-%m-%dT%H:%M:%S.%fZ")
+            formatted_datetime = iso_datetime.strftime("%d/%m/%Y %H:%M")
+        except ValueError as e:
+            logging.error(f"Invalid datetime format for order: {order['datetime']}")
+            formatted_datetime = "Invalid Date"
+
         order_details.append({
             "order_id": order['id'],
             "amount": order['amount'],
@@ -96,14 +124,27 @@ def existing_orders():
             "sell_at": metrics['sell_threshold'],
             "days_open": metrics['days_open'],
             "distance": metrics['distance_to_sell'],
+            "datetime": formatted_datetime,  # Επιστροφή της μετασχηματισμένης ημερομηνίας
         })
+
     return jsonify(order_details)
+
+
+
+
+
+
+
 
 @app.route('/DCA/sell_threshold_eval', methods=['GET'])
 def sell_threshold_eval():
-    orders = load_orders()
+    # Φόρτωση μόνο των ORDERS από το αρχείο
+    orders_data = load_orders()
+    orders = orders_data.get("ORDERS", {})  # Παίρνουμε μόνο το αντικείμενο ORDERS
+
     current_price = float(exchange.fetch_ticker(PAIR)['last'])
     evaluations = []
+
     for price, order in orders.items():
         metrics = calculate_metrics(order, current_price)
         status = "Selling" if current_price >= metrics['sell_threshold'] else "Not selling"
@@ -113,7 +154,13 @@ def sell_threshold_eval():
             "current_price": current_price,
             "status": status,
         })
+
     return jsonify(evaluations)
+
+    
+    
+    
+    
 
 if __name__ == "__main__":
     # Προσθήκη HTTPS εάν χρειάζεται
