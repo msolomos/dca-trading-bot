@@ -160,23 +160,49 @@ def initialize_exchange():
 def load_or_initialize_orders():
     try:
         with open(ORDERS_FILE, 'r') as f:
-            orders = json.load(f)
-            if not isinstance(orders, dict):
-                raise ValueError("Orders file contains invalid data.")
-            return orders
+            orders_data = json.load(f)
+            
+            # Αρχικοποίηση των πεδίων αν δεν υπάρχουν
+            if "ORDERS" not in orders_data:
+                orders_data["ORDERS"] = {}
+            if "META" not in orders_data:
+                orders_data["META"] = {"PROFIT": 0.0, "SALES": 0}
+            
+            return orders_data
     except (FileNotFoundError, ValueError):
-        logging.warning("Orders file not found or invalid. Initializing new orders.")
-        return {}
+        logging.warning("Orders file not found or invalid. Initializing new data.")
+        return {
+            "ORDERS": {},
+            "META": {
+                "PROFIT": 0.0,
+                "SALES": 0
+            }
+        }
 
 
 
 # Save orders
-def save_orders(orders):
+def save_orders(orders, save_meta=True, save_orders=True):
     try:
+        # Φορτώνουμε το τρέχον περιεχόμενο του αρχείου
+        try:
+            with open(ORDERS_FILE, 'r') as f:
+                existing_data = json.load(f)
+        except (FileNotFoundError, ValueError):
+            existing_data = {}
+
+        # Ενημερώνουμε μόνο τα απαραίτητα μέρη
+        if save_orders:
+            existing_data["ORDERS"] = orders.get("ORDERS", {})
+        if save_meta:
+            existing_data["META"] = orders.get("META", {"PROFIT": 0.0, "SALES": 0})
+
+        # Αποθηκεύουμε τα δεδομένα πίσω στο αρχείο
         with open(ORDERS_FILE, 'w') as f:
-            json.dump(orders, f, indent=4)
+            json.dump(existing_data, f, indent=4)
     except Exception as e:
         logging.error(f"Failed to save orders: {e}")
+
 
 
 
@@ -380,41 +406,37 @@ def run_dca_bot():
 
 
         # Υπολογισμός επόμενης τιμής αγοράς
-        if orders:
-            lowest_order_price = min(map(float, orders.keys()))
+        if "ORDERS" in orders and orders["ORDERS"]:
+            lowest_order_price = min(map(float, orders["ORDERS"].keys()))
             next_buy_price = lowest_order_price * (1 - PERCENTAGE_DROP / 100)
-            logging.info(f"Next buy will occur if the price drops to: {next_buy_price:.4f} {CRYPTO_CURRENCY} or lower.")            
-        
-        
+            logging.info(f"Next buy will occur if the price drops to: {next_buy_price:.4f} {CRYPTO_CURRENCY} or lower.")
 
-        # Log details of existing orders            
-        if orders:
+        # Log details of existing orders
+        if "ORDERS" in orders and orders["ORDERS"]:
             print()
             logging.info(f"{'=' * 20} Existing Orders in {CRYPTO_CURRENCY} {'=' * 20}")
             logging.info(f"{'Order ID':<15} {'Amount':<10} {'Bought At':<10} {'Sell At':<10} {'Days Open':<10} {'Distance to Sell':<10}")
             total_amount = 0
             total_cost = 0
-            
-            for price, order in orders.items():
+
+            for price, order in orders["ORDERS"].items():
                 metrics = calculate_metrics(order, current_price)
                 logging.info(f"{order['id']:<15} {order['amount']:<10.2f} {order['price']:<10.4f} {metrics['sell_threshold']:<10.4f} {metrics['days_open']:<10} {metrics['distance_to_sell']:<10.4f}")
                 total_amount += order['amount']
                 total_cost += order['amount'] * order['price']
-                
 
             # Υπολογισμός μέσου όρου αγοράς
             if total_amount > 0:
                 average_price = total_cost / total_amount
                 logging.info(f"Total quantity: {total_amount:.2f} {CRYPTO_SYMBOL}, Average Buy: {average_price:.4f} {CRYPTO_CURRENCY}")
-                  
-        
         else:
             logging.info("No existing orders.")
+
             
         
 
         # Initial buying logic if there are no orders
-        if not orders:
+        if "ORDERS" not in orders or not orders["ORDERS"]:
             try:
                 # Fetch historical data and calculate indicators
                 df = fetch_ohlcv(exchange, symbol=PAIR, timeframe='1h', limit=100)
@@ -437,12 +459,8 @@ def run_dca_bot():
                 )
                 logging.info(f"Identified support levels: {support_levels}")
 
-                
-                
                 # Check conditions for initial buy
                 if meets_threshold and near_support_level(current_price, support_levels, tolerance=50):
-                    
-                    
                     # Execute market buy
                     order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
 
@@ -468,11 +486,13 @@ def run_dca_bot():
                         "datetime": order['datetime'],
                         "timestamp": order['timestamp']
                     }
-                    orders[str(current_price)] = order_data
-                    save_orders(orders)
-                
-                
-                
+
+                    # Ενημέρωση και αποθήκευση του ORDERS
+                    if "ORDERS" not in orders:
+                        orders["ORDERS"] = {}
+                    orders["ORDERS"][str(current_price)] = order_data
+                    save_orders({"ORDERS": orders["ORDERS"]}, save_meta=False)
+
                 else:
                     logging.info(
                         "No suitable conditions for initial buy. Waiting for next signal."
@@ -484,18 +504,17 @@ def run_dca_bot():
                 return
 
 
+
                 
                 
                 
         # Buy more if price drops below percentage_drop
-        if orders and current_price <= min(map(float, orders.keys())) * (1 - PERCENTAGE_DROP / 100):
-            
+        if "ORDERS" in orders and orders["ORDERS"] and current_price <= min(map(float, orders["ORDERS"].keys())) * (1 - PERCENTAGE_DROP / 100):
             # Buy Crypto
             try:
                 order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
-                                   
                 
-                lowest_order_price = min(map(float, orders.keys()))
+                lowest_order_price = min(map(float, orders["ORDERS"].keys()))
                 logging.info(
                     f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
                     f"Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
@@ -510,14 +529,10 @@ def run_dca_bot():
                 )
 
                 logging.info(
-                    f"Total Orders: {len(orders) + 1}. Current Portfolio Strategy: Adding to position to reduce cost average."
+                    f"Total Orders: {len(orders['ORDERS']) + 1}. Current Portfolio Strategy: Adding to position to reduce cost average."
                 )
 
-                
-                print()
-                                    
-                
-                # Record the order
+                # Καταγραφή της παραγγελίας
                 order_data = {
                     "id": order['id'],
                     "symbol": PAIR,
@@ -529,54 +544,67 @@ def run_dca_bot():
                     "datetime": order['datetime'],
                     "timestamp": order['timestamp']
                 }
-                orders[str(current_price)] = order_data
-                save_orders(orders)
-                
-                
+
+                # Ενημέρωση και αποθήκευση του ORDERS
+                orders["ORDERS"][str(current_price)] = order_data
+                save_orders({"ORDERS": orders["ORDERS"]}, save_meta=False)
+
             except ccxt.BaseError as api_error:
                 logging.error(f"Error placing buy order: {api_error}")
                 startBot = False
-                return                    
+                return
+                  
                 
                 
                 
         
         # Sell evaluation
-        if orders:
+        if "ORDERS" in orders and orders["ORDERS"]:
             print()
             logging.info(f"{'=' * 20} Sell Threshold Evaluation in {CRYPTO_CURRENCY} {'=' * 20}")
-            for price, order in list(orders.items()):  # Copy to avoid modifying during iteration
+            for price, order in list(orders["ORDERS"].items()):  # Copy to avoid modifying during iteration
                 sell_threshold = float(price) * (1 + PERCENTAGE_RISE / 100)
-                
-                #logging.info(f"Calculated sell threshold: {sell_threshold:.4f} {CRYPTO_CURRENCY} for order price: {price} {CRYPTO_CURRENCY}")
-                
 
                 if current_price >= sell_threshold:
                     # Sell BTC
                     sell_order = exchange.create_market_sell_order(PAIR, order['amount'])
                     logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Selling!")
-                    
-                    # Στέλνουμε push notification
-                    rounded_price = round(current_price, 4)  # Στρογγυλοποίηση για να ταιριάζει με τη μορφή στο push
-                    send_push_notification(f"Sale order of {order['amount']} {PAIR} was executed at {rounded_price:.4f} with order no: {order['id']}")
-                                       
 
-                    # Remove the order from the list
-                    del orders[price]
-                    save_orders(orders)
-                    
+                    # Υπολογισμός κέρδους
+                    buy_price = float(order['price'])  # Η τιμή αγοράς της θέσης
+                    amount = float(order['amount'])   # Το ποσό του crypto που πουλιέται
+                    sell_price = current_price        # Η τρέχουσα τιμή πώλησης
+
+                    total_cost = buy_price * amount   # Συνολικό κόστος αγοράς
+                    total_income = sell_price * amount  # Συνολικό εισόδημα από την πώληση
+                    profit = total_income - total_cost  # Κέρδος
+
+                    # Ενημέρωση του META
+                    orders["META"]["PROFIT"] += profit  # Προσθήκη στο συνολικό κέρδος
+                    orders["META"]["SALES"] += 1        # Αύξηση του αριθμού πωλήσεων
+
+                    # Καταγραφή του κέρδους
+                    logging.info(f"Profit for order ID {order['id']}: {profit:.4f} {CRYPTO_CURRENCY}. Total Profit: {orders['META']['PROFIT']:.4f}. Total Sales: {orders['META']['SALES']}.")
+                    send_push_notification(
+                        f"Sale executed for order ID {order['id']}. Sold {amount} {PAIR} at {sell_price:.4f}. "
+                        f"Profit: {profit:.4f} {CRYPTO_CURRENCY}. Total Profit: {orders['META']['PROFIT']:.4f}. Total Sales: {orders['META']['SALES']}."
+                    )
+
+                    # Αφαίρεση της παραγγελίας
+                    del orders["ORDERS"][price]
+
+                    # Αποθήκευση του ORDERS και του META ξεχωριστά
+                    save_orders({"ORDERS": orders["ORDERS"]}, save_meta=False)  # Αποθήκευση των παραγγελιών
+                    save_orders({"META": orders["META"]}, save_orders=False)   # Αποθήκευση του META
+
                 else:
-                    #logging.info(f"Current price {current_price:.4f} {CRYPTO_CURRENCY} did not reach the sell threshold {sell_threshold:.4f} {CRYPTO_CURRENCY}.")
                     logging.info(f"Order ID: {order['id']} | Sell Threshold: {sell_threshold:.4f} | Current Price: {current_price:.4f} -> Not selling.")
+
                 
-                  
-        
-        
+                         
         # Μετά την ολοκλήρωση του iteration
         iteration_end = time.time()
         logging.info(f"Loop iteration completed in {iteration_end - iteration_start:.2f} seconds.")
-
-
 
 
 
