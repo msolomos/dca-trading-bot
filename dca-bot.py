@@ -384,16 +384,30 @@ def run_dca_bot():
     # Initialize Exchange and load orders
     exchange = initialize_exchange()
     orders = load_or_initialize_orders()
-    logging.info(f"Loaded {len(orders)} existing order(s).")
+    meta = orders["META"]
+       
+    if "ORDERS" in orders and orders["ORDERS"]:
+        logging.info(f"Loaded {len(orders['ORDERS'])} existing order(s).")
+    
+    else:
+        logging.info("There are no existing orders.")
+    
+    
+    profit = round(meta["PROFIT"], 2)  # Στρογγυλοποίηση στο δεύτερο δεκαδικό
+    sales = meta["SALES"]
+    
+    logging.info(f"Total Profit Earned: {profit:.2f} {CRYPTO_CURRENCY}.")
+    logging.info(f"Total Sales Completed: {sales} transactions.")   
+    
     
     # Fetch the initial price
     last_price = float(exchange.fetch_ticker(PAIR)['last'])
     logging.debug(f"Starting price: {last_price}")    
 
+    
+    
     try:
-
-        logging.info(f"Starting a new loop iteration for {PAIR}")
-        
+              
         # Fetch the current price
         current_price = float(exchange.fetch_ticker(PAIR)['last'])
         logging.info(f"Current price: {current_price} {CRYPTO_CURRENCY}")
@@ -405,15 +419,14 @@ def run_dca_bot():
         )
 
 
-        # Υπολογισμός επόμενης τιμής αγοράς
+        # Υπολογισμός επόμενης τιμής αγοράς & Log details of existing orders
         if "ORDERS" in orders and orders["ORDERS"]:
             lowest_order_price = min(map(float, orders["ORDERS"].keys()))
             next_buy_price = lowest_order_price * (1 - PERCENTAGE_DROP / 100)
             logging.info(f"Next buy will occur if the price drops to: {next_buy_price:.4f} {CRYPTO_CURRENCY} or lower.")
-
-        # Log details of existing orders
-        if "ORDERS" in orders and orders["ORDERS"]:
+            
             print()
+            
             logging.info(f"{'=' * 20} Existing Orders in {CRYPTO_CURRENCY} {'=' * 20}")
             logging.info(f"{'Order ID':<15} {'Amount':<10} {'Bought At':<10} {'Sell At':<10} {'Days Open':<10} {'Distance to Sell':<10}")
             total_amount = 0
@@ -429,15 +442,16 @@ def run_dca_bot():
             if total_amount > 0:
                 average_price = total_cost / total_amount
                 logging.info(f"Total quantity: {total_amount:.2f} {CRYPTO_SYMBOL}, Average Buy: {average_price:.4f} {CRYPTO_CURRENCY}")
-        else:
-            logging.info("No existing orders.")
 
-            
+           
         
 
         # Initial buying logic if there are no orders
         if "ORDERS" not in orders or not orders["ORDERS"]:
             try:
+                # Executing buy logic...
+                logging.info(f"Executing buy logic for for {PAIR}...")
+                
                 # Fetch historical data and calculate indicators
                 df = fetch_ohlcv(exchange, symbol=PAIR, timeframe='1h', limit=100)
                 df['ema_fast'] = ema(df['close'], period=9)
