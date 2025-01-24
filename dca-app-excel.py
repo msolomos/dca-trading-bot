@@ -87,8 +87,26 @@ def favicon():
 
 @app.route('/DCA/current_price', methods=['GET'])
 def current_price():
+    # Λήψη της τρέχουσας τιμής
     current_price = float(exchange.fetch_ticker(PAIR)['last'])
-    return jsonify({"pair": PAIR, "current_price": current_price})
+    
+    # Φόρτωση του META από το αρχείο JSON
+    orders_data = load_orders()
+    meta_data = orders_data.get("META", {})  # Παίρνουμε το αντικείμενο META, αν υπάρχει
+    
+    # Υπολογισμός του συνολικού κέρδους
+    profit = meta_data.pop("PROFIT", 0)  # Αφαιρούμε το profit από το META
+    rounded_profit = round(profit, 2)  # Στρογγυλοποίηση σε 2 δεκαδικά ψηφία 
+
+
+       
+    
+    return jsonify({
+        "pair": PAIR,
+        "current_price": current_price,
+        "meta": meta_data,
+        "profit": rounded_profit  # Επιστροφή του στρογγυλοποιημένου profit
+    })
 
 
 
