@@ -56,6 +56,7 @@ def load_keys():
             percentage_drop = trade_config.get("PERCENTAGE_DROP")
             percentage_rise = trade_config.get("PERCENTAGE_RISE")
             trade_amount = trade_config.get("TRADE_AMOUNT")
+            max_orders = trade_config.get("MAX_ORDERS")
             
             # Έλεγχος για κενές τιμές
             missing_keys = []
@@ -80,7 +81,7 @@ def load_keys():
                 raise ValueError(f"Missing keys in the JSON file: {', '.join(missing_keys)}")
 
             return (api_key, api_secret, sendgrid_api_key, pushover_token, pushover_user, email_sender, email_recipient,
-                    pair, crypto_symbol, crypto_currency, exchange_name, percentage_drop, percentage_rise, trade_amount)
+                    pair, crypto_symbol, crypto_currency, exchange_name, percentage_drop, percentage_rise, trade_amount, max_orders)
     except FileNotFoundError:
         raise FileNotFoundError(f"The specified JSON file '{CONFIG_FILE}' was not found.")
     except json.JSONDecodeError:
@@ -90,7 +91,7 @@ def load_keys():
 
 # Load configuration from the JSON file
 (API_KEY, API_SECRET, SENDGRID_API_KEY, PUSHOVER_TOKEN, PUSHOVER_USER, EMAIL_SENDER, EMAIL_RECIPIENT,
- PAIR, CRYPTO_SYMBOL, CRYPTO_CURRENCY, EXCHANGE_NAME, PERCENTAGE_DROP, PERCENTAGE_RISE, TRADE_AMOUNT) = load_keys()
+ PAIR, CRYPTO_SYMBOL, CRYPTO_CURRENCY, EXCHANGE_NAME, PERCENTAGE_DROP, PERCENTAGE_RISE, TRADE_AMOUNT, MAX_ORDERS) = load_keys()
 
 
 
@@ -523,45 +524,51 @@ def run_dca_bot():
                 
                 
         # Buy more if price drops below percentage_drop
-        if "ORDERS" in orders and orders["ORDERS"] and current_price <= min(map(float, orders["ORDERS"].keys())) * (1 - PERCENTAGE_DROP / 100):
-            # Buy Crypto
+        if "ORDERS" in orders and orders["ORDERS"]:           
             try:
-                order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
+                # Έλεγχος μέγιστων παραγγελιών
+                if len(orders["ORDERS"]) >= MAX_ORDERS:
+                    logging.warning(f"Maximum order limit reached ({MAX_ORDERS}). No more orders will be placed.")
+                    
                 
-                lowest_order_price = min(map(float, orders["ORDERS"].keys()))
-                logging.info(
-                    f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
-                    f"Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
-                    f"from the lowest order price {lowest_order_price:.4f}."
-                )
+                elif current_price <= min(map(float, orders["ORDERS"].keys())) * (1 - PERCENTAGE_DROP / 100):                
+                    # Buy Crypto
+                    order = exchange.create_market_buy_order(PAIR, TRADE_AMOUNT)
+                    
+                    lowest_order_price = min(map(float, orders["ORDERS"].keys()))
+                    logging.info(
+                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                        f"Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
+                        f"from the lowest order price {lowest_order_price:.4f}."
+                    )
 
-                # Ενημέρωση χρήστη για αγορά με Push msg
-                send_push_notification(
-                    f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
-                    f"Reason: Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
-                    f"from the lowest order price {lowest_order_price:.4f}."
-                )
+                    # Ενημέρωση χρήστη για αγορά με Push msg
+                    send_push_notification(
+                        f"Bought {TRADE_AMOUNT} {CRYPTO_SYMBOL} at {current_price:.4f} {CRYPTO_CURRENCY}. "
+                        f"Reason: Current price {current_price:.4f} {CRYPTO_CURRENCY} dropped by more than {PERCENTAGE_DROP}% "
+                        f"from the lowest order price {lowest_order_price:.4f}."
+                    )
 
-                logging.info(
-                    f"Total Orders: {len(orders['ORDERS']) + 1}. Current Portfolio Strategy: Adding to position to reduce cost average."
-                )
+                    logging.info(
+                        f"Total Orders: {len(orders['ORDERS']) + 1}. Current Portfolio Strategy: Adding to position to reduce cost average."
+                    )
 
-                # Καταγραφή της παραγγελίας
-                order_data = {
-                    "id": order['id'],
-                    "symbol": PAIR,
-                    "price": current_price,
-                    "side": "buy",
-                    "status": "open",
-                    "amount": TRADE_AMOUNT,
-                    "remaining": TRADE_AMOUNT,
-                    "datetime": order['datetime'],
-                    "timestamp": order['timestamp']
-                }
+                    # Καταγραφή της παραγγελίας
+                    order_data = {
+                        "id": order['id'],
+                        "symbol": PAIR,
+                        "price": current_price,
+                        "side": "buy",
+                        "status": "open",
+                        "amount": TRADE_AMOUNT,
+                        "remaining": TRADE_AMOUNT,
+                        "datetime": order['datetime'],
+                        "timestamp": order['timestamp']
+                    }
 
-                # Ενημέρωση και αποθήκευση του ORDERS
-                orders["ORDERS"][str(current_price)] = order_data
-                save_orders({"ORDERS": orders["ORDERS"]}, save_meta=False)
+                    # Ενημέρωση και αποθήκευση του ORDERS
+                    orders["ORDERS"][str(current_price)] = order_data
+                    save_orders({"ORDERS": orders["ORDERS"]}, save_meta=False)
 
             except ccxt.BaseError as api_error:
                 logging.error(f"Error placing buy order: {api_error}")
