@@ -167,5 +167,4 @@ This is an evolving project, and contributions are welcome! Whether you have sug
 ---
 
 ## Disclaimer
-This API is provided for educational purposes only. Use it at your own risk. The creators are not responsible for any financial losses incurred.
-
+This API is provided for educational purposes only. Use it at your own risk.
