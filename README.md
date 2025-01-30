@@ -130,18 +130,18 @@ python dca_bot.py
   - json
 
 Install dependencies with:
-```bash
+```
+bash
 pip install -r requirements.txt
 ```
 
----
 
 ## Notes
 - Ensure your API keys are secured and not exposed in public repositories.
 - Backtest the bot with historical data before running it with real funds.
 - Monitor the bot regularly to ensure proper operation.
 
----
+
 
 ## License
 This project is open-source and available under the [MIT License](LICENSE).
