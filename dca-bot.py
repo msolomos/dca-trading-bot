@@ -27,6 +27,7 @@ ENABLE_PUSH_NOTIFICATIONS = True
 
 # Άλλες μεταβλητές αρχικοποίησης
 startBot = True
+TARGET_BALANCE = 300
 
 
 # Load Keys from external file
@@ -203,6 +204,106 @@ def save_orders(orders, save_meta=True, save_orders=True):
             json.dump(existing_data, f, indent=4)
     except Exception as e:
         logging.error(f"Failed to save orders: {e}")
+
+
+
+
+def balance_currencies(exchange, symbol, target_balance, min_precision=1, tolerance=5, fee_buffer=0.001):
+    """
+    Εκτελεί το rebalance για οποιοδήποτε ζεύγος νομισμάτων.
+
+    :param exchange: Αντικείμενο ανταλλακτηρίου (π.χ. ccxt.binance)
+    :param symbol: Το ζεύγος νομισμάτων (π.χ. "BTC/USDT")
+    :param target_balance: Στόχος balance για κάθε νόμισμα (π.χ. 400 για BTC και 400 για USDT)
+    :param min_precision: Ελάχιστη ακρίβεια δεκαδικών για τις συναλλαγές
+    :param tolerance: Ανοχή διαφοράς στο balance για αποφυγή συνεχών αλλαγών
+    :param fee_buffer: Περιθώριο ασφαλείας για τα fees
+    """
+
+    try:
+        logging.info("Checking currencies balances...")
+
+        # Ανάκτηση διαθέσιμου υπολοίπου
+        balance = exchange.fetch_balance()
+        base_currency, quote_currency = symbol.split('/')
+        free_base = balance[base_currency]['free']
+        free_quote = balance[quote_currency]['free']
+
+        logging.info(f"[BALANCE CHECK] {base_currency}: {free_base:.2f}, {quote_currency}: {free_quote:.2f}")
+
+        current_price = exchange.fetch_ticker(symbol)['last']
+        logging.info(f"[PRICE] Current price for {symbol}: {current_price:.4f}")
+
+        # Υπολογισμός ποσότητας που θέλουμε να αγοράσουμε
+        required_base = TRADE_AMOUNT
+        logging.info(f"[TARGET BUY] Attempting to buy {required_base:.2f} {base_currency} using available {quote_currency}")
+
+        logging.debug(f"[QUOTE STATUS] Current {quote_currency} available: {free_quote:.2f}, Required: {required_base * current_price * (1 + fee_buffer):.2f}")
+
+
+        # Υπολογισμός κόστους αγοράς
+        estimated_cost = required_base * current_price * (1 + fee_buffer)
+        need_more_quote = estimated_cost > free_quote
+        logging.info(f"[NEED CHECK] Need More {quote_currency}: {need_more_quote} (Required: {estimated_cost:.2f}, Available: {free_quote:.2f})")
+
+        # if need_more_quote:
+            # # Υπολογισμός ελλείμματος + μαξιλάρι ασφαλείας
+            # deficit = estimated_cost - free_quote
+            # buffered_deficit = deficit * (1 + fee_buffer)  # π.χ. +0.1%
+            # base_to_sell = buffered_deficit / current_price
+
+            # logging.info(f"[DEFICIT] Raw deficit: {deficit:.4f} {quote_currency}, Buffered: {buffered_deficit:.4f}")
+            # logging.info(f"[BASE TO SELL] Required to cover buffered deficit: {base_to_sell:.4f} {base_currency}")
+
+            # # Περιορισμός στο διαθέσιμο ποσό (free_base)
+            # actual_base_to_sell = min(base_to_sell, free_base)
+
+            # if actual_base_to_sell < 10 ** (-min_precision):
+                # logging.warning(f"[MIN TRADE] Calculated sell amount {actual_base_to_sell:.8f} {base_currency} below precision.")
+                # logging.info("[SKIP] Sell amount too small to execute.")
+            # else:
+                # actual_base_to_sell = round(actual_base_to_sell, min_precision)
+                # exchange.create_market_sell_order(symbol, actual_base_to_sell)
+                # logging.info(f"[SWAP] Sold {actual_base_to_sell:.4f} {base_currency} to cover deficit.")
+
+                # # Ενημέρωση balances μετά την πώληση
+                # balance = exchange.fetch_balance()
+                # free_quote = balance[quote_currency]['free']
+
+                # # Υπολογισμός ποσότητας προς αγορά (με νέο διαθέσιμο quote)
+                # max_affordable_amount = free_quote / current_price
+                # amount_to_buy = min(required_base, max_affordable_amount)
+
+                # if amount_to_buy <= 0:
+                    # logging.warning(f"[BUY ERROR] Still not enough {quote_currency} to buy after swap.")
+                    # logging.info("[SKIP] Buy skipped due to insufficient quote after fallback.")
+                # else:
+                    # amount_to_buy = round(amount_to_buy, min_precision)
+                    # exchange.create_market_buy_order(symbol, amount_to_buy)
+                    # logging.info(f"[TRADE] Bought {amount_to_buy:.4f} {base_currency} after selling to cover deficit.")
+
+ 
+
+        # # Τελικός έλεγχος υπολοίπου
+        # balance = exchange.fetch_balance()
+        # final_base = balance[base_currency]['free']
+        # final_quote = balance[quote_currency]['free']
+
+        # logging.info(f"[FINAL BALANCE] {base_currency}: {final_base:.2f}, {quote_currency}: {final_quote:.2f}")
+        # logging.info(f"[REBALANCE COMPLETE] Rebalance completed successfully.")
+
+    except Exception as e:
+        logging.error(f"[BALANCE ERROR] An error occurred during rebalance: {e}")
+        send_push_notification(f"[BALANCE ERROR] An error occurred: {e}")
+
+
+
+
+
+
+
+
+
 
 
 
@@ -413,6 +514,10 @@ def run_dca_bot():
         current_price = float(exchange.fetch_ticker(PAIR)['last'])
         logging.info(f"Current price: {current_price} {CRYPTO_CURRENCY}")
         
+        
+        # Κλήση rebalance πριν το αρχικό buy
+        balance_currencies(exchange, PAIR, target_balance=TARGET_BALANCE)           
+        
 
         # Logging the strategy parameters
         logging.info(
@@ -444,8 +549,7 @@ def run_dca_bot():
                 average_price = total_cost / total_amount
                 logging.info(f"Total quantity: {total_amount:.2f} {CRYPTO_SYMBOL}, Average Buy: {average_price:.4f} {CRYPTO_CURRENCY}")
 
-           
-        
+              
 
         # Initial buying logic if there are no orders
         if "ORDERS" not in orders or not orders["ORDERS"]:
@@ -519,9 +623,6 @@ def run_dca_bot():
                 return
 
 
-
-                
-                
                 
         # Buy more if price drops below percentage_drop
         if "ORDERS" in orders and orders["ORDERS"]:           
@@ -576,8 +677,7 @@ def run_dca_bot():
                 return
                   
                 
-                
-                
+
         
         # Sell evaluation
         if "ORDERS" in orders and orders["ORDERS"]:
