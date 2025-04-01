@@ -2,6 +2,7 @@ from flask import Flask, jsonify
 from datetime import datetime
 import json
 import ccxt
+import logging
 
 app = Flask(__name__)
 
@@ -66,9 +67,29 @@ def load_orders():
 def calculate_metrics(order, current_price):
     if 'price' not in order:
         raise KeyError("'price' key is missing from the order.")
-    
+    if not order.get('datetime'):
+        raise ValueError("Order is missing 'datetime' field or it is None.")
+
+    raw_dt = order['datetime']
+
+    # Προσπάθεια μετατροπής του datetime με και χωρίς μικροδευτερόλεπτα
+    dt = None
+    try:
+        dt = datetime.strptime(raw_dt, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError:
+        try:
+            dt = datetime.strptime(raw_dt, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            # Αν όλα αποτύχουν, κάνε log και συνέχισε με days_open = -1
+            
+            dt = None
+
+    if dt:
+        days_open = (datetime.utcnow() - dt).days
+    else:
+        days_open = -1  # Ενδείκτης ότι κάτι πήγε στραβά
+
     sell_threshold = float(order['price']) * (1 + 2 / 100)  # PERCENTAGE_RISE = 2%
-    days_open = (datetime.utcnow() - datetime.strptime(order['datetime'], "%Y-%m-%dT%H:%M:%S.%fZ")).days
     distance_to_sell = sell_threshold - current_price
 
     return {
@@ -76,6 +97,15 @@ def calculate_metrics(order, current_price):
         "days_open": days_open,
         "distance_to_sell": distance_to_sell,
     }
+
+
+
+
+def format_order_id(order_id):
+    if EXCHANGE_NAME.lower() != "binance" and '-' in order_id:
+        return order_id.split('-')[-1]
+    return order_id
+
 
 
 
@@ -136,7 +166,7 @@ def existing_orders():
             formatted_datetime = "Invalid Date"
 
         order_details.append({
-            "order_id": order['id'],
+            "order_id": format_order_id(order['id']),
             "amount": order['amount'],
             "bought_at": order['price'],
             "sell_at": metrics['sell_threshold'],
@@ -167,7 +197,7 @@ def sell_threshold_eval():
         metrics = calculate_metrics(order, current_price)
         status = "Selling" if current_price >= metrics['sell_threshold'] else "Not selling"
         evaluations.append({
-            "order_id": order['id'],
+            "order_id": format_order_id(order['id']),
             "sell_threshold": metrics['sell_threshold'],
             "current_price": current_price,
             "status": status,
