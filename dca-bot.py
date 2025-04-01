@@ -28,6 +28,7 @@ ENABLE_PUSH_NOTIFICATIONS = True
 # Άλλες μεταβλητές αρχικοποίησης
 startBot = True
 TARGET_BALANCE = 300
+ENABLE_CHECK_BALANCE = True
 
 
 # Load Keys from external file
@@ -236,7 +237,7 @@ def balance_currencies(exchange, symbol, target_balance, min_precision=1, tolera
 
         # Υπολογισμός ποσότητας που θέλουμε να αγοράσουμε
         required_base = TRADE_AMOUNT
-        logging.info(f"[TARGET BUY] Attempting to buy {required_base:.2f} {base_currency} using available {quote_currency}")
+        logging.info(f"[TARGET BUY CHECK] Checking if sufficient {quote_currency} balance is available to buy {required_base:.2f} {base_currency}")
 
         logging.debug(f"[QUOTE STATUS] Current {quote_currency} available: {free_quote:.2f}, Required: {required_base * current_price * (1 + fee_buffer):.2f}")
 
@@ -246,51 +247,51 @@ def balance_currencies(exchange, symbol, target_balance, min_precision=1, tolera
         need_more_quote = estimated_cost > free_quote
         logging.info(f"[NEED CHECK] Need More {quote_currency}: {need_more_quote} (Required: {estimated_cost:.2f}, Available: {free_quote:.2f})")
 
-        # if need_more_quote:
-            # # Υπολογισμός ελλείμματος + μαξιλάρι ασφαλείας
-            # deficit = estimated_cost - free_quote
-            # buffered_deficit = deficit * (1 + fee_buffer)  # π.χ. +0.1%
-            # base_to_sell = buffered_deficit / current_price
+        if need_more_quote:
+            # Υπολογισμός ελλείμματος + μαξιλάρι ασφαλείας
+            deficit = estimated_cost - free_quote
+            buffered_deficit = deficit * (1 + fee_buffer)  # π.χ. +0.1%
+            base_to_sell = buffered_deficit / current_price
 
-            # logging.info(f"[DEFICIT] Raw deficit: {deficit:.4f} {quote_currency}, Buffered: {buffered_deficit:.4f}")
-            # logging.info(f"[BASE TO SELL] Required to cover buffered deficit: {base_to_sell:.4f} {base_currency}")
+            logging.info(f"[DEFICIT] Raw deficit: {deficit:.4f} {quote_currency}, Buffered: {buffered_deficit:.4f}")
+            logging.info(f"[BASE TO SELL] Required to cover buffered deficit: {base_to_sell:.4f} {base_currency}")
 
-            # # Περιορισμός στο διαθέσιμο ποσό (free_base)
-            # actual_base_to_sell = min(base_to_sell, free_base)
+            # Περιορισμός στο διαθέσιμο ποσό (free_base)
+            actual_base_to_sell = min(base_to_sell, free_base)
 
-            # if actual_base_to_sell < 10 ** (-min_precision):
-                # logging.warning(f"[MIN TRADE] Calculated sell amount {actual_base_to_sell:.8f} {base_currency} below precision.")
-                # logging.info("[SKIP] Sell amount too small to execute.")
-            # else:
-                # actual_base_to_sell = round(actual_base_to_sell, min_precision)
-                # exchange.create_market_sell_order(symbol, actual_base_to_sell)
-                # logging.info(f"[SWAP] Sold {actual_base_to_sell:.4f} {base_currency} to cover deficit.")
+            if actual_base_to_sell < 10 ** (-min_precision):
+                logging.warning(f"[MIN TRADE] Calculated sell amount {actual_base_to_sell:.8f} {base_currency} below precision.")
+                logging.info("[SKIP] Sell amount too small to execute.")
+            else:
+                actual_base_to_sell = round(actual_base_to_sell, min_precision)
+                exchange.create_market_sell_order(symbol, actual_base_to_sell)
+                logging.info(f"[SWAP] Sold {actual_base_to_sell:.4f} {base_currency} to cover deficit.")
 
-                # # Ενημέρωση balances μετά την πώληση
-                # balance = exchange.fetch_balance()
-                # free_quote = balance[quote_currency]['free']
+                # Ενημέρωση balances μετά την πώληση
+                balance = exchange.fetch_balance()
+                free_quote = balance[quote_currency]['free']
 
-                # # Υπολογισμός ποσότητας προς αγορά (με νέο διαθέσιμο quote)
-                # max_affordable_amount = free_quote / current_price
-                # amount_to_buy = min(required_base, max_affordable_amount)
+                # Υπολογισμός ποσότητας προς αγορά (με νέο διαθέσιμο quote)
+                max_affordable_amount = free_quote / current_price
+                amount_to_buy = min(required_base, max_affordable_amount)
 
-                # if amount_to_buy <= 0:
-                    # logging.warning(f"[BUY ERROR] Still not enough {quote_currency} to buy after swap.")
-                    # logging.info("[SKIP] Buy skipped due to insufficient quote after fallback.")
-                # else:
-                    # amount_to_buy = round(amount_to_buy, min_precision)
-                    # exchange.create_market_buy_order(symbol, amount_to_buy)
-                    # logging.info(f"[TRADE] Bought {amount_to_buy:.4f} {base_currency} after selling to cover deficit.")
+                if amount_to_buy <= 0:
+                    logging.warning(f"[BUY ERROR] Still not enough {quote_currency} to buy after swap.")
+                    logging.info("[SKIP] Buy skipped due to insufficient quote after fallback.")
+                else:
+                    amount_to_buy = round(amount_to_buy, min_precision)
+                    exchange.create_market_buy_order(symbol, amount_to_buy)
+                    logging.info(f"[TRADE] Bought {amount_to_buy:.4f} {base_currency} after selling to cover deficit.")
 
  
 
-        # # Τελικός έλεγχος υπολοίπου
-        # balance = exchange.fetch_balance()
-        # final_base = balance[base_currency]['free']
-        # final_quote = balance[quote_currency]['free']
+        # Τελικός έλεγχος υπολοίπου
+        balance = exchange.fetch_balance()
+        final_base = balance[base_currency]['free']
+        final_quote = balance[quote_currency]['free']
 
-        # logging.info(f"[FINAL BALANCE] {base_currency}: {final_base:.2f}, {quote_currency}: {final_quote:.2f}")
-        # logging.info(f"[REBALANCE COMPLETE] Rebalance completed successfully.")
+        logging.info(f"[FINAL BALANCE] {base_currency}: {final_base:.2f}, {quote_currency}: {final_quote:.2f}")
+        logging.info(f"[REBALANCE COMPLETE] Rebalance completed successfully.")
 
     except Exception as e:
         logging.error(f"[BALANCE ERROR] An error occurred during rebalance: {e}")
@@ -516,7 +517,8 @@ def run_dca_bot():
         
         
         # Κλήση rebalance πριν το αρχικό buy
-        balance_currencies(exchange, PAIR, target_balance=TARGET_BALANCE)           
+        if ENABLE_CHECK_BALANCE:
+            balance_currencies(exchange, PAIR, target_balance=TARGET_BALANCE)           
         
 
         # Logging the strategy parameters
@@ -602,8 +604,8 @@ def run_dca_bot():
                         "status": "open",
                         "amount": TRADE_AMOUNT,
                         "remaining": TRADE_AMOUNT,
-                        "datetime": order['datetime'],
-                        "timestamp": order['timestamp']
+                        "datetime": order['datetime'] if order.get("datetime") else datetime.utcnow().isoformat() + "Z",
+                        "timestamp": order['timestamp'] if order.get("timestamp") else int(datetime.utcnow().timestamp() * 1000)
                     }
 
                     # Ενημέρωση και αποθήκευση του ORDERS
@@ -663,8 +665,8 @@ def run_dca_bot():
                         "status": "open",
                         "amount": TRADE_AMOUNT,
                         "remaining": TRADE_AMOUNT,
-                        "datetime": order['datetime'],
-                        "timestamp": order['timestamp']
+                        "datetime": order['datetime'] if order.get("datetime") else datetime.utcnow().isoformat() + "Z",
+                        "timestamp": order['timestamp'] if order.get("timestamp") else int(datetime.utcnow().timestamp() * 1000)
                     }
 
                     # Ενημέρωση και αποθήκευση του ORDERS
